@@ -99,6 +99,30 @@ namespace Veldrid.Sdl2
     }
 
     /// <summary>
+    /// The different sensors defined by SDL.
+    /// Additional sensors may be available, using platform dependent semantics.
+    /// </summary>
+    public enum SDL_SensorType
+    {
+        /// <summary>
+        /// Returned for an invalid sensor
+        /// </summary>
+        Invalid = 0,
+        /// <summary>
+        /// Unknown sensor type
+        /// </summary>
+        Unknown = 1,
+        /// <summary>
+        /// Accelerometer
+        /// </summary>
+        Accelerometer = 2,
+        /// <summary>
+        /// Gyroscope
+        /// </summary>
+        Gyroscope = 3
+    }
+
+    /// <summary>
     /// The list of axes available from a controller.
     /// Thumbstick axis values range from SDL_Joystick_AXIS_MIN to SDL_Joystick_AXIS_MAX,
     /// and are centered within ~8000 of zero, though advanced UI will allow users to set
@@ -169,6 +193,15 @@ namespace Veldrid.Sdl2
         /// Is the joystick on this index supported by the game controller interface?
         /// </summary>
         public static bool SDL_IsGameController(int joystick_index) => s_sdl_isGameController(joystick_index) != 0;
+
+
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate int SDL_SDL_GameControllerHasSensor_t(SDL_GameController gamecontroller, SDL_SensorType type);
+        private static SDL_SDL_GameControllerHasSensor_t s_sdl_gameControllerHasSensor = LoadFunction<SDL_SDL_GameControllerHasSensor_t>("SDL_GameControllerHasSensor");
+        /// <summary>
+        /// Is the joystick on this index supported by the game controller interface?
+        /// </summary>
+        public static bool SDL_GameControllerHasSensor(SDL_GameController gamecontroller, SDL_SensorType type) => s_sdl_gameControllerHasSensor(gamecontroller, type) != 0;
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate byte* SDL_GameControllerNameForIndex_t(int joystick_index);

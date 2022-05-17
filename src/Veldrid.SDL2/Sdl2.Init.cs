@@ -20,5 +20,6 @@ namespace Veldrid.Sdl2
         Joystick = 0x00000200u,
         Haptic = 0x00001000u,
         GameController = 0x00002000u,
+        Sensor = 0x00008000u
     }
 }

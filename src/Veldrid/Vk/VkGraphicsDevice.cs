@@ -735,6 +735,7 @@ namespace Veldrid.Vulkan
             vkGetPhysicalDeviceFeatures(_physicalDevice, &physicalDeviceFeatures);
             _physicalDeviceFeatures = physicalDeviceFeatures;
 
+
             VkPhysicalDeviceMemoryProperties physicalDeviceMemProperties;
             vkGetPhysicalDeviceMemoryProperties(_physicalDevice, &physicalDeviceMemProperties);
             _physicalDeviceMemProperties = physicalDeviceMemProperties;
@@ -845,13 +846,38 @@ namespace Veldrid.Vulkan
                 throw new VeldridException(
                     $"The following Vulkan device extensions were not available: {missingList}");
             }
+            VkPhysicalDeviceDescriptorIndexingFeatures indexing_features = new()
+            {
+                sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT
+            };
+            VkPhysicalDeviceFeatures2 device_features = new()
+            {
+                sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                pNext = &indexing_features
+            };
+            vkGetPhysicalDeviceFeatures2(_physicalDevice, &device_features);
+            bool bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
 
-            VkDeviceCreateInfo deviceCreateInfo = new();
-            deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-            deviceCreateInfo.queueCreateInfoCount = queueCreateInfosCount;
-            deviceCreateInfo.pQueueCreateInfos = queueCreateInfos;
+            VkPhysicalDeviceFeatures2 features2 = new()
+            {
+                sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            };
+            vkGetPhysicalDeviceFeatures2(_physicalDevice, &features2);
+            if (bindless_supported)
+            {
+                // This should be already set to VK_TRUE, as we queried before.
+                indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
+                indexing_features.runtimeDescriptorArray = VK_TRUE;
+                features2.pNext = &indexing_features;
+            }
 
-            deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
+            VkDeviceCreateInfo deviceCreateInfo = new()
+            {
+                sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                queueCreateInfoCount = queueCreateInfosCount,
+                pQueueCreateInfos = queueCreateInfos,
+                pNext = &features2
+            };
 
             StackList<IntPtr> layerNames = new();
             if (_standardValidationSupported)

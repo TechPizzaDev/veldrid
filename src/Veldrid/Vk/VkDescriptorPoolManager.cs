@@ -21,13 +21,22 @@ namespace Veldrid.Vulkan
         {
             lock (_lock)
             {
+
+                uint maxBinding = 1;
+                VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo = new()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+                    descriptorSetCount = 1,
+                    pDescriptorCounts = &maxBinding
+                };
                 VkDescriptorPool pool = GetPool(counts);
                 VkDescriptorSetAllocateInfo dsAI = new()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                     descriptorSetCount = 1,
                     pSetLayouts = &setLayout,
-                    descriptorPool = pool
+                    descriptorPool = pool,
+                    pNext = &countInfo
                 };
 
                 VkDescriptorSet set;
@@ -73,7 +82,7 @@ namespace Veldrid.Vulkan
         {
             uint totalSets = 1000;
             uint descriptorCount = 100;
-            uint poolSizeCount = 7;
+            uint poolSizeCount = 8;
             VkDescriptorPoolSize* sizes = stackalloc VkDescriptorPoolSize[(int)poolSizeCount];
             sizes[0].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             sizes[0].descriptorCount = descriptorCount;
@@ -89,11 +98,13 @@ namespace Veldrid.Vulkan
             sizes[5].descriptorCount = descriptorCount;
             sizes[6].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
             sizes[6].descriptorCount = descriptorCount;
+            sizes[7].type = VkDescriptorType.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sizes[7].descriptorCount = descriptorCount;
 
             VkDescriptorPoolCreateInfo poolCI = new()
             {
                 sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                flags = VkDescriptorPoolCreateFlags.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+                flags = VkDescriptorPoolCreateFlags.VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT | VkDescriptorPoolCreateFlags.VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
                 maxSets = totalSets,
                 pPoolSizes = sizes,
                 poolSizeCount = poolSizeCount
