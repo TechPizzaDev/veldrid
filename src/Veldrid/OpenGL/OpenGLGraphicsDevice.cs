@@ -601,7 +601,7 @@ namespace Veldrid.OpenGL
                             (uint)newHeight);
                         CheckLastError();
                     }
-                }, null);
+                }, false);
             }
 
             void destroyContext(IntPtr ctx)
@@ -801,11 +801,8 @@ namespace Veldrid.OpenGL
                 OpenGLCommandList glCommandList = Util.AssertSubtype<CommandList, OpenGLCommandList>(cl);
                 OpenGLCommandEntryList entryList = glCommandList.CurrentCommands;
                 IncrementCount(glCommandList);
-                _executionThread.ExecuteCommands(entryList);
-                if (fence is OpenGLFence glFence)
-                {
-                    glFence.Set();
-                }
+
+                _executionThread.ExecuteCommands(entryList, fence as OpenGLFence);
             }
         }
 
@@ -1145,11 +1142,7 @@ namespace Veldrid.OpenGL
 
         internal void ExecuteOnGLThread(Action action, bool wait)
         {
-            ManualResetEventSlim? mre = null;
-            if (wait)
-                mre = new ManualResetEventSlim();
-            _executionThread.Run(action, mre);
-            mre?.Dispose();
+            _executionThread.Run(action, wait);
         }
 
         internal void FlushAndFinish()
@@ -1176,7 +1169,7 @@ namespace Veldrid.OpenGL
             private readonly Thread _thread;
             private bool _terminated;
             private readonly List<Exception> _exceptions = new();
-            private readonly object _exceptionsLock = new();
+            private readonly Queue<ManualResetEvent> _resetEventPool = new();
 
             public ExecutionThread(
                 OpenGLGraphicsDevice gd,
@@ -1223,93 +1216,122 @@ namespace Veldrid.OpenGL
                 }
             }
 
+            private ManualResetEvent RentResetEvent()
+            {
+                lock (_resetEventPool)
+                {
+                    if (_resetEventPool.TryDequeue(out ManualResetEvent? ev))
+                    {
+                        return ev;
+                    }
+                }
+                return new ManualResetEvent(false);
+            }
+
+            private void ReturnResetEvent(ManualResetEvent mre)
+            {
+                if (_resetEventPool.Count > Environment.ProcessorCount)
+                {
+                    mre.Dispose();
+                    return;
+                }
+
+                lock (_resetEventPool)
+                {
+                    _resetEventPool.Enqueue(mre);
+                    mre.Reset();
+                }
+            }
+
             private void ExecuteWorkItem(ref ExecutionThreadWorkItem workItem)
             {
-                ManualResetEventSlim? eventAfterExecute = null;
+                ManualResetEvent? eventAfterExecute = null;
                 try
                 {
                     switch (workItem.Type)
                     {
                         case WorkItemType.ExecuteList:
-                            {
-                                OpenGLCommandEntryList? list = Unsafe.As<OpenGLCommandEntryList>(workItem.Object0);
-                                Debug.Assert(list != null);
+                        {
+                            OpenGLCommandEntryList? list = Unsafe.As<OpenGLCommandEntryList>(workItem.Object0);
+                            OpenGLFence? fence = Unsafe.As<OpenGLFence>(workItem.Object1);
+                            Debug.Assert(list != null);
+                            Debug.Assert(fence != null);
 
-                                try
+                            try
+                            {
+                                list.ExecuteAll(_gd._commandExecutor, fence);
+                            }
+                            finally
+                            {
+                                if (!_gd.CheckCommandListDisposal(list.Parent))
                                 {
-                                    list.ExecuteAll(_gd._commandExecutor);
-                                }
-                                finally
-                                {
-                                    if (!_gd.CheckCommandListDisposal(list.Parent))
-                                    {
-                                        list.Parent.OnCompleted(list);
-                                    }
+                                    list.Parent.OnCompleted(list);
                                 }
                             }
-                            break;
+                        }
+                        break;
 
                         case WorkItemType.Map:
-                            {
-                                MappableResource? resourceToMap = Unsafe.As<MappableResource>(workItem.Object0);
-                                eventAfterExecute = Unsafe.As<ManualResetEventSlim>(workItem.Object1);
-                                Debug.Assert(resourceToMap != null);
-                                Debug.Assert(eventAfterExecute != null);
+                        {
+                            MappableResource? resourceToMap = Unsafe.As<MappableResource>(workItem.Object0);
+                            eventAfterExecute = Unsafe.As<ManualResetEvent>(workItem.Object1);
+                            Debug.Assert(resourceToMap != null);
+                            Debug.Assert(eventAfterExecute != null);
 
-                                MapParams* resultPtr = (MapParams*)Util.UnpackIntPtr(workItem.UInt0, workItem.UInt1);
+                            MapParams* resultPtr = (MapParams*)Util.UnpackIntPtr(workItem.UInt0, workItem.UInt1);
 
-                                ExecuteMapResource(
-                                    resourceToMap,
-                                    resultPtr);
-                            }
-                            break;
+                            ExecuteMapResource(
+                                resourceToMap,
+                                resultPtr);
+                        }
+                        break;
 
                         case WorkItemType.Unmap:
-                            {
-                                MappableResource? resourceToMap = Unsafe.As<MappableResource>(workItem.Object0);
-                                Debug.Assert(resourceToMap != null);
+                        {
+                            MappableResource? resourceToMap = Unsafe.As<MappableResource>(workItem.Object0);
+                            Debug.Assert(resourceToMap != null);
 
-                                uint subresource = workItem.UInt0;
+                            uint subresource = workItem.UInt0;
 
-                                ExecuteUnmapResource(resourceToMap, subresource);
-                            }
-                            break;
+                            ExecuteUnmapResource(resourceToMap, subresource);
+                        }
+                        break;
 
                         case WorkItemType.UpdateBuffer:
-                            {
-                                DeviceBuffer? updateBuffer = Unsafe.As<DeviceBuffer>(workItem.Object0);
-                                eventAfterExecute = Unsafe.As<ManualResetEventSlim>(workItem.Object1);
-                                Debug.Assert(updateBuffer != null);
-                                Debug.Assert(eventAfterExecute != null);
+                        {
+                            DeviceBuffer? updateBuffer = Unsafe.As<DeviceBuffer>(workItem.Object0);
+                            eventAfterExecute = Unsafe.As<ManualResetEvent>(workItem.Object1);
+                            Debug.Assert(updateBuffer != null);
+                            Debug.Assert(eventAfterExecute != null);
 
-                                UpdateBufferArgs* args = (UpdateBufferArgs*)Util.UnpackIntPtr(workItem.UInt0, workItem.UInt1);
+                            UpdateBufferArgs* args = (UpdateBufferArgs*)Util.UnpackIntPtr(workItem.UInt0, workItem.UInt1);
 
-                                _gd._commandExecutor.UpdateBuffer(
-                                    updateBuffer,
-                                    args->BufferOffsetInBytes,
-                                    args->Data,
-                                    args->SizeInBytes);
-                            }
-                            break;
+                            _gd._commandExecutor.UpdateBuffer(
+                                updateBuffer,
+                                args->BufferOffsetInBytes,
+                                args->Data,
+                                args->SizeInBytes);
+                        }
+                        break;
 
                         case WorkItemType.CreateBuffer:
-                            {
-                                DeviceBuffer? updateBuffer = Unsafe.As<DeviceBuffer>(workItem.Object0);
-                                eventAfterExecute = Unsafe.As<ManualResetEventSlim>(workItem.Object1);
-                                Debug.Assert(updateBuffer != null);
-                                Debug.Assert(eventAfterExecute != null);
+                        {
+                            DeviceBuffer? updateBuffer = Unsafe.As<DeviceBuffer>(workItem.Object0);
+                            eventAfterExecute = Unsafe.As<ManualResetEvent>(workItem.Object1);
+                            Debug.Assert(updateBuffer != null);
+                            Debug.Assert(eventAfterExecute != null);
 
-                                IntPtr initialData = Util.UnpackIntPtr(workItem.UInt0, workItem.UInt1);
+                            IntPtr initialData = Util.UnpackIntPtr(workItem.UInt0, workItem.UInt1);
 
-                                OpenGLBuffer glBuffer = Util.AssertSubtype<DeviceBuffer, OpenGLBuffer>(updateBuffer);
-                                glBuffer.CreateGLResources(initialData);
-                            }
-                            break;
+                            OpenGLBuffer glBuffer = Util.AssertSubtype<DeviceBuffer, OpenGLBuffer>(updateBuffer);
+                            glBuffer.CreateGLResources(initialData);
+                        }
+                        break;
 
                         case WorkItemType.UpdateTexture:
                         {
                             Texture? texture = Unsafe.As<Texture>(workItem.Object0);
-                            eventAfterExecute = Unsafe.As<ManualResetEventSlim>(workItem.Object1);
+                            eventAfterExecute = Unsafe.As<ManualResetEvent>(workItem.Object1);
                             Debug.Assert(texture != null);
                             Debug.Assert(eventAfterExecute != null);
 
@@ -1319,72 +1341,72 @@ namespace Veldrid.OpenGL
                                 texture, args->Data, args->X, args->Y, args->Z,
                                 args->Width, args->Height, args->Depth, args->MipLevel, args->ArrayLayer);
                         }
-                            break;
+                        break;
 
                         case WorkItemType.GenericAction:
-                            {
-                                Action? action = Unsafe.As<Action>(workItem.Object0);
-                                Debug.Assert(action != null);
+                        {
+                            Action? action = Unsafe.As<Action>(workItem.Object0);
+                            Debug.Assert(action != null);
 
-                                action.Invoke();
-                            }
-                            break;
+                            action.Invoke();
+                        }
+                        break;
 
                         case WorkItemType.TerminateAction:
+                        {
+                            // Check if the OpenGL context has already been destroyed by the OS. If so, just exit out.
+                            uint error = glGetError();
+                            if (error != (uint)ErrorCode.InvalidOperation)
                             {
-                                // Check if the OpenGL context has already been destroyed by the OS. If so, just exit out.
-                                uint error = glGetError();
-                                if (error != (uint)ErrorCode.InvalidOperation)
-                                {
-                                    _makeCurrent(_gd._glContext);
+                                _makeCurrent(_gd._glContext);
 
-                                    _gd.FlushDisposables();
-                                    _gd._deleteContext(_gd._glContext);
-                                }
-                                _gd.StagingMemoryPool.Dispose();
-                                _terminated = true;
+                                _gd.FlushDisposables();
+                                _gd._deleteContext(_gd._glContext);
                             }
-                            break;
+                            _gd.StagingMemoryPool.Dispose();
+                            _terminated = true;
+                        }
+                        break;
 
                         case WorkItemType.SetSyncToVerticalBlank:
-                            {
-                                bool value = workItem.UInt0 == 1;
-                                _gd._setSyncToVBlank(value);
-                            }
-                            break;
+                        {
+                            bool value = workItem.UInt0 == 1;
+                            _gd._setSyncToVBlank(value);
+                        }
+                        break;
 
                         case WorkItemType.SwapBuffers:
-                            {
-                                _gd._swapBuffers();
-                                _gd.FlushDisposables();
-                            }
-                            break;
+                        {
+                            _gd._swapBuffers();
+                            _gd.FlushDisposables();
+                        }
+                        break;
 
                         case WorkItemType.WaitForIdle:
-                            {
-                                eventAfterExecute = Unsafe.As<ManualResetEventSlim>(workItem.Object0);
-                                Debug.Assert(eventAfterExecute != null);
+                        {
+                            eventAfterExecute = Unsafe.As<ManualResetEvent>(workItem.Object0);
+                            Debug.Assert(eventAfterExecute != null);
 
-                                _gd.FlushDisposables();
-                                bool isFullFlush = workItem.UInt0 != 0;
-                                if (isFullFlush)
-                                {
-                                    glFlush();
-                                    glFinish();
-                                }
+                            _gd.FlushDisposables();
+                            bool isFullFlush = workItem.UInt0 != 0;
+                            if (isFullFlush)
+                            {
+                                glFlush();
+                                glFinish();
                             }
-                            break;
+                        }
+                        break;
 
                         case WorkItemType.InitializeResource:
-                            {
-                                OpenGLDeferredResource? resource = Unsafe.As<OpenGLDeferredResource>(workItem.Object0);
-                                eventAfterExecute = Unsafe.As<ManualResetEventSlim>(workItem.Object1);
-                                Debug.Assert(resource != null);
-                                Debug.Assert(eventAfterExecute != null);
+                        {
+                            OpenGLDeferredResource? resource = Unsafe.As<OpenGLDeferredResource>(workItem.Object0);
+                            eventAfterExecute = Unsafe.As<ManualResetEvent>(workItem.Object1);
+                            Debug.Assert(resource != null);
+                            Debug.Assert(eventAfterExecute != null);
 
-                                resource.EnsureResourcesCreated();
-                            }
-                            break;
+                            resource.EnsureResourcesCreated();
+                        }
+                        break;
 
                         default:
                             throw new InvalidOperationException("Invalid command type: " + workItem.Type);
@@ -1392,7 +1414,7 @@ namespace Veldrid.OpenGL
                 }
                 catch (Exception e)
                 {
-                    lock (_exceptionsLock)
+                    lock (_exceptions)
                     {
                         _exceptions.Add(e);
                     }
@@ -1711,7 +1733,7 @@ namespace Veldrid.OpenGL
 
             private void CheckExceptions()
             {
-                lock (_exceptionsLock)
+                lock (_exceptions)
                 {
                     if (_exceptions.Count > 0)
                     {
@@ -1732,15 +1754,15 @@ namespace Veldrid.OpenGL
             {
                 CheckExceptions();
 
-                ManualResetEventSlim? mre = source != IntPtr.Zero ? new() : null;
+                ManualResetEvent? mre = source != IntPtr.Zero ? RentResetEvent() : null;
                 ExecutionThreadWorkItem workItem = new(buffer, mre, source);
 
                 EnqueueWork(ref workItem);
 
                 if (mre != null)
                 {
-                    mre.Wait();
-                    mre.Dispose();
+                    mre.WaitOne();
+                    ReturnResetEvent(mre);
 
                     CheckExceptions();
                 }
@@ -1757,12 +1779,12 @@ namespace Veldrid.OpenGL
                 mrp.Subresource = subresource;
                 mrp.MapMode = mode;
 
-                ManualResetEventSlim mre = new(false);
+                ManualResetEvent mre = RentResetEvent();
                 ExecutionThreadWorkItem workItem = new(resource, &mrp, mre);
 
                 EnqueueWork(ref workItem);
-                mre.Wait();
-                mre.Dispose();
+                mre.WaitOne();
+                ReturnResetEvent(mre);
 
                 CheckExceptions();
 
@@ -1778,12 +1800,12 @@ namespace Veldrid.OpenGL
                 EnqueueWork(ref workItem);
             }
 
-            public void ExecuteCommands(OpenGLCommandEntryList entryList)
+            public void ExecuteCommands(OpenGLCommandEntryList entryList, OpenGLFence? fence)
             {
                 CheckExceptions();
 
                 entryList.Parent.OnSubmitted(entryList);
-                ExecutionThreadWorkItem workItem = new(entryList);
+                ExecutionThreadWorkItem workItem = new(entryList, fence);
                 EnqueueWork(ref workItem);
             }
 
@@ -1791,12 +1813,12 @@ namespace Veldrid.OpenGL
             {
                 CheckExceptions();
 
-                ManualResetEventSlim mre = new();
+                ManualResetEvent mre = RentResetEvent();
                 ExecutionThreadWorkItem workItem = new(buffer, mre, args);
 
                 EnqueueWork(ref workItem);
-                mre.Wait();
-                mre.Dispose();
+                mre.WaitOne();
+                ReturnResetEvent(mre);
 
                 CheckExceptions();
             }
@@ -1805,22 +1827,31 @@ namespace Veldrid.OpenGL
             {
                 CheckExceptions();
 
-                ManualResetEventSlim mre = new();
+                ManualResetEvent mre = RentResetEvent();
                 ExecutionThreadWorkItem workItem = new(texture, mre, args);
 
                 EnqueueWork(ref workItem);
-                mre.Wait();
-                mre.Dispose();
+                mre.WaitOne();
+                ReturnResetEvent(mre);
 
                 CheckExceptions();
             }
 
-            internal void Run(Action a, ManualResetEventSlim? resetEvent)
+            internal void Run(Action a, bool wait)
             {
                 CheckExceptions();
 
-                ExecutionThreadWorkItem workItem = new(a, resetEvent, false);
+                ManualResetEvent? mre = wait ? RentResetEvent() : null;
+                ExecutionThreadWorkItem workItem = new(a, mre, false);
+
                 EnqueueWork(ref workItem);
+                if (mre != null)
+                {
+                    mre.WaitOne();
+                    ReturnResetEvent(mre);
+
+                    CheckExceptions();
+                }
             }
 
             internal void Terminate()
@@ -1835,12 +1866,12 @@ namespace Veldrid.OpenGL
             {
                 CheckExceptions();
 
-                ManualResetEventSlim mre = new();
+                ManualResetEvent mre = RentResetEvent();
                 ExecutionThreadWorkItem workItem = new(mre, isFullFlush: false);
 
                 EnqueueWork(ref workItem);
-                mre.Wait();
-                mre.Dispose();
+                mre.WaitOne();
+                ReturnResetEvent(mre);
 
                 CheckExceptions();
             }
@@ -1861,12 +1892,12 @@ namespace Veldrid.OpenGL
             {
                 CheckExceptions();
 
-                ManualResetEventSlim mre = new();
+                ManualResetEvent mre = RentResetEvent();
                 ExecutionThreadWorkItem workItem = new(mre, isFullFlush: true);
 
                 EnqueueWork(ref workItem);
-                mre.Wait();
-                mre.Dispose();
+                mre.WaitOne();
+                ReturnResetEvent(mre);
 
                 CheckExceptions();
             }
@@ -1875,12 +1906,12 @@ namespace Veldrid.OpenGL
             {
                 CheckExceptions();
 
-                ManualResetEventSlim mre = new();
+                ManualResetEvent mre = RentResetEvent();
                 ExecutionThreadWorkItem workItem = new(deferredResource, mre);
 
                 EnqueueWork(ref workItem);
-                mre.Wait();
-                mre.Dispose();
+                mre.WaitOne();
+                ReturnResetEvent(mre);
 
                 CheckExceptions();
             }
@@ -1892,7 +1923,7 @@ namespace Veldrid.OpenGL
             }
         }
 
-        public enum WorkItemType : byte
+        public enum WorkItemType
         {
             Map,
             Unmap,
@@ -1915,19 +1946,17 @@ namespace Veldrid.OpenGL
             public readonly object? Object1;
             public readonly uint UInt0;
             public readonly uint UInt1;
-            public readonly uint UInt2;
 
             public ExecutionThreadWorkItem(
                 MappableResource resource,
                 MapParams* mapResult,
-                ManualResetEventSlim resetEvent)
+                ManualResetEvent resetEvent)
             {
                 Type = WorkItemType.Map;
                 Object0 = resource;
                 Object1 = resetEvent;
 
                 Util.PackIntPtr((IntPtr)mapResult, out UInt0, out UInt1);
-                UInt2 = 0;
             }
 
             public ExecutionThreadWorkItem(MappableResource resource, uint subresource)
@@ -1938,41 +1967,37 @@ namespace Veldrid.OpenGL
 
                 UInt0 = subresource;
                 UInt1 = 0;
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(OpenGLCommandEntryList commandList)
+            public ExecutionThreadWorkItem(OpenGLCommandEntryList commandList, OpenGLFence? fence)
             {
                 Type = WorkItemType.ExecuteList;
                 Object0 = commandList;
-                Object1 = null;
+                Object1 = fence;
 
                 UInt0 = 0;
                 UInt1 = 0;
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(DeviceBuffer updateBuffer, ManualResetEventSlim? mre, UpdateBufferArgs* args)
+            public ExecutionThreadWorkItem(DeviceBuffer updateBuffer, ManualResetEvent? mre, UpdateBufferArgs* args)
             {
                 Type = WorkItemType.UpdateBuffer;
                 Object0 = updateBuffer;
                 Object1 = mre;
 
                 Util.PackIntPtr((IntPtr)args, out UInt0, out UInt1);
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(DeviceBuffer createBuffer, ManualResetEventSlim? mre, IntPtr initialData)
+            public ExecutionThreadWorkItem(DeviceBuffer createBuffer, ManualResetEvent? mre, IntPtr initialData)
             {
                 Type = WorkItemType.CreateBuffer;
                 Object0 = createBuffer;
                 Object1 = mre;
 
                 Util.PackIntPtr(initialData, out UInt0, out UInt1);
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(Action a, ManualResetEventSlim? mre, bool isTermination)
+            public ExecutionThreadWorkItem(Action a, ManualResetEvent? mre, bool isTermination)
             {
                 Type = isTermination ? WorkItemType.TerminateAction : WorkItemType.GenericAction;
                 Object0 = a;
@@ -1980,20 +2005,18 @@ namespace Veldrid.OpenGL
 
                 UInt0 = 0;
                 UInt1 = 0;
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(Texture texture, ManualResetEventSlim? mre, UpdateTextureArgs* args)
+            public ExecutionThreadWorkItem(Texture texture, ManualResetEvent? mre, UpdateTextureArgs* args)
             {
                 Type = WorkItemType.UpdateTexture;
                 Object0 = texture;
                 Object1 = mre;
 
                 Util.PackIntPtr((IntPtr)args, out UInt0, out UInt1);
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(ManualResetEventSlim mre, bool isFullFlush)
+            public ExecutionThreadWorkItem(ManualResetEvent mre, bool isFullFlush)
             {
                 Type = WorkItemType.WaitForIdle;
                 Object0 = mre;
@@ -2001,7 +2024,6 @@ namespace Veldrid.OpenGL
 
                 UInt0 = isFullFlush ? 1u : 0u;
                 UInt1 = 0;
-                UInt2 = 0;
             }
 
             public ExecutionThreadWorkItem(bool value)
@@ -2012,7 +2034,6 @@ namespace Veldrid.OpenGL
 
                 UInt0 = value ? 1u : 0u;
                 UInt1 = 0;
-                UInt2 = 0;
             }
 
             public ExecutionThreadWorkItem(WorkItemType type)
@@ -2023,10 +2044,9 @@ namespace Veldrid.OpenGL
 
                 UInt0 = 0;
                 UInt1 = 0;
-                UInt2 = 0;
             }
 
-            public ExecutionThreadWorkItem(OpenGLDeferredResource resource, ManualResetEventSlim mre)
+            public ExecutionThreadWorkItem(OpenGLDeferredResource resource, ManualResetEvent mre)
             {
                 Type = WorkItemType.InitializeResource;
                 Object0 = resource;
@@ -2034,7 +2054,6 @@ namespace Veldrid.OpenGL
 
                 UInt0 = 0;
                 UInt1 = 0;
-                UInt2 = 0;
             }
         }
 
@@ -2053,19 +2072,6 @@ namespace Veldrid.OpenGL
         {
             public MappedResource MappedResource;
             public StagingBlock StagingBlock;
-        }
-
-        private class InitializeResourceInfo
-        {
-            public OpenGLDeferredResource DeferredResource;
-            public ManualResetEventSlim ResetEvent;
-            public Exception? Exception;
-
-            public InitializeResourceInfo(OpenGLDeferredResource deferredResource, ManualResetEventSlim mre)
-            {
-                DeferredResource = deferredResource;
-                ResetEvent = mre;
-            }
         }
     }
 }
