@@ -34,24 +34,40 @@ namespace Veldrid.Vulkan
 
             VkDescriptorSetLayout dsl = vkLayout.DescriptorSetLayout;
             _descriptorCounts = vkLayout.DescriptorResourceCounts;
-            _descriptorAllocationToken = _gd.DescriptorPoolManager.Allocate(_descriptorCounts, dsl);
+            if (vkLayout.Description.LastElementParams)
+            {
+                _descriptorAllocationToken = _gd.DescriptorPoolManager.AllocateBindless(_descriptorCounts, dsl);
+            }
+            else
+            {
+                _descriptorAllocationToken = _gd.DescriptorPoolManager.Allocate(_descriptorCounts, dsl);
+            }
+
 
             BindableResource[] boundResources = description.BoundResources;
             uint descriptorWriteCount = (uint)boundResources.Length;
             VkWriteDescriptorSet* descriptorWrites = stackalloc VkWriteDescriptorSet[(int)descriptorWriteCount];
             VkDescriptorBufferInfo* bufferInfos = stackalloc VkDescriptorBufferInfo[(int)descriptorWriteCount];
             VkDescriptorImageInfo* imageInfos = stackalloc VkDescriptorImageInfo[(int)descriptorWriteCount];
-
             for (int i = 0; i < descriptorWriteCount; i++)
             {
-                VkDescriptorType type = vkLayout.DescriptorTypes[i];
 
+                VkDescriptorType type;
+
+                if (vkLayout.Description.LastElementParams)
+                {
+                    type = vkLayout.DescriptorTypes[System.Math.Min(i, vkLayout.Description.Elements.Length - 1)];
+                }
+                else
+                {
+                    type = vkLayout.DescriptorTypes[i];
+                }
                 descriptorWrites[i] = new VkWriteDescriptorSet()
                 {
                     sType = VkStructureType.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     descriptorCount = 1,
                     descriptorType = type,
-                    dstBinding = (uint)i,
+                    dstBinding = (uint)System.Math.Min(i, vkLayout.Description.Elements.Length - 1),
                     dstSet = _descriptorAllocationToken.Set
                 };
 

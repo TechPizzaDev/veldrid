@@ -17,7 +17,7 @@ namespace Veldrid.Vulkan
             _pools.Add(CreateNewPool());
         }
 
-        public unsafe DescriptorAllocationToken Allocate(DescriptorResourceCounts counts, VkDescriptorSetLayout setLayout)
+        public unsafe DescriptorAllocationToken AllocateBindless(DescriptorResourceCounts counts, VkDescriptorSetLayout setLayout)
         {
             lock (_lock)
             {
@@ -37,6 +37,27 @@ namespace Veldrid.Vulkan
                     pSetLayouts = &setLayout,
                     descriptorPool = pool,
                     pNext = &countInfo
+                };
+
+                VkDescriptorSet set;
+                VkResult result = vkAllocateDescriptorSets(_gd.Device, &dsAI, &set);
+                VulkanUtil.CheckResult(result);
+
+                return new DescriptorAllocationToken(set, pool);
+            }
+        }
+
+        public unsafe DescriptorAllocationToken Allocate(DescriptorResourceCounts counts, VkDescriptorSetLayout setLayout)
+        {
+            lock (_lock)
+            {
+                VkDescriptorPool pool = GetPool(counts);
+                VkDescriptorSetAllocateInfo dsAI = new()
+                {
+                    sType = VkStructureType.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                    descriptorSetCount = 1,
+                    pSetLayouts = &setLayout,
+                    descriptorPool = pool,
                 };
 
                 VkDescriptorSet set;

@@ -18,6 +18,7 @@ namespace Veldrid.NeoDemo.Objects
         // Context objects
         private DeviceBuffer _vb;
         private DeviceBuffer _ib;
+        private DeviceBuffer _ab;
         private Pipeline _pipeline;
         private Pipeline _reflectionPipeline;
         private ResourceSet _resourceSet;
@@ -45,6 +46,9 @@ namespace Veldrid.NeoDemo.Objects
             _ib = factory.CreateBuffer(new BufferDescription(s_indices.SizeInBytes(), BufferUsage.IndexBuffer));
             cl.UpdateBuffer(_ib, 0, s_indices);
 
+            _ab = factory.CreateBuffer(new BufferDescription(gd.UniformBufferMinOffsetAlignment, BufferUsage.UniformBuffer));
+            cl.UpdateBuffer(_ib, 0, 1);
+
             ImageSharpCubemapTexture imageSharpCubemapTexture = new(_right, _left, _top, _bottom, _back, _front, false);
 
             Texture textureCube = imageSharpCubemapTexture.CreateDeviceTexture(gd, factory);
@@ -58,11 +62,12 @@ namespace Veldrid.NeoDemo.Objects
 
             (Shader vs, Shader fs) = StaticResourceCache.GetShaders(gd, gd.ResourceFactory, "Skybox");
 
-            _layout = factory.CreateResourceLayout(new ResourceLayoutDescription(
+            _layout = factory.CreateResourceLayout(new ResourceLayoutDescription(true,
                 new ResourceLayoutElementDescription("Projection", ResourceKind.UniformBuffer, ShaderStages.Vertex),
                 new ResourceLayoutElementDescription("View", ResourceKind.UniformBuffer, ShaderStages.Vertex),
-                new ResourceLayoutElementDescription("CubeTexture", ResourceKind.TextureReadOnly, ShaderStages.Fragment),
-                new ResourceLayoutElementDescription("CubeSampler", ResourceKind.Sampler, ShaderStages.Fragment)));
+                new ResourceLayoutElementDescription("CubeSampler", ResourceKind.Sampler, ShaderStages.Fragment),
+                new ResourceLayoutElementDescription("b", ResourceKind.UniformBuffer, ShaderStages.Fragment),
+                new ResourceLayoutElementDescription("CubeTexture", ResourceKind.TextureReadOnly, ShaderStages.Fragment)));
 
             GraphicsPipelineDescription pd = new(
                 BlendStateDescription.SingleAlphaBlend,
@@ -81,8 +86,11 @@ namespace Veldrid.NeoDemo.Objects
                 _layout,
                 sc.ProjectionMatrixBuffer,
                 sc.ViewMatrixBuffer,
+                gd.PointSampler,
+                _ab,
                 textureView,
-                gd.PointSampler));
+                textureView
+                ));
 
             _disposeCollector.Add(_vb, _ib, textureCube, textureView, _layout, _pipeline, _reflectionPipeline, _resourceSet, vs, fs);
         }

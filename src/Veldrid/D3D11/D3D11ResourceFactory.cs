@@ -42,6 +42,10 @@ namespace Veldrid.D3D11
 
         public override ResourceLayout CreateResourceLayout(in ResourceLayoutDescription description)
         {
+            if (description.LastElementParams)
+            {
+                throw new ArgumentException("ResourceLayoutDescription.LastElementParams is only supported on vulkan");
+            }
             return new D3D11ResourceLayout(description);
         }
 

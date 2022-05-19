@@ -14,12 +14,30 @@ namespace Veldrid
         public ResourceLayoutElementDescription[] Elements;
 
         /// <summary>
+        /// Whether the last element is a variable amount of textures or a single texture.
+        /// </summary>
+        public bool LastElementParams;
+
+        /// <summary>
         /// Constructs a new ResourceLayoutDescription.
         /// </summary>
         /// <param name="elements">An array of <see cref="ResourceLayoutElementDescription"/> objects, describing the properties
         /// of each resource element in the <see cref="ResourceLayout"/>.</param>
         public ResourceLayoutDescription(params ResourceLayoutElementDescription[] elements)
         {
+            LastElementParams = false;
+            Elements = elements;
+        }
+
+        /// <summary>
+        /// Constructs a new ResourceLayoutDescription.
+        /// </summary>
+        /// <param name="lastElementParams">VULKAN ONLY! Set true if the last element is a variable amount of elements of the same type.</param>
+        /// <param name="elements">An array of <see cref="ResourceLayoutElementDescription"/> objects, describing the properties
+        /// of each resource element in the <see cref="ResourceLayout"/>.</param>
+        public ResourceLayoutDescription(bool lastElementParams, params ResourceLayoutElementDescription[] elements)
+        {
+            LastElementParams = lastElementParams;
             Elements = elements;
         }
 

@@ -38,6 +38,10 @@ namespace Veldrid.MTL
 
         public override ResourceLayout CreateResourceLayout(in ResourceLayoutDescription description)
         {
+            if (description.LastElementParams)
+            {
+                throw new ArgumentException("ResourceLayoutDescription.LastElementParams is only supported on vulkan");
+            }
             return new MTLResourceLayout(description, _gd);
         }
 

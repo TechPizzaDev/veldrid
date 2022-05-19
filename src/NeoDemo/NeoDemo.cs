@@ -58,6 +58,7 @@ namespace Veldrid.NeoDemo
             VeldridStartup.CreateWindowAndGraphicsDevice(
                 windowCI,
                 gdOptions,
+                GraphicsBackend.Vulkan,
                 //VeldridStartup.GetPlatformDefaultBackend(),
                 //GraphicsBackend.Metal,
                 //GraphicsBackend.Vulkan,
